@@ -83,6 +83,15 @@ class Repeater(Thread, metaclass=ABCMeta):
             # Repeat the message to other interfaces
             for if_index, send_sock in self.send_socks.items():
 
+                # First, discard any accumulated packets. We don't care about
+                # any packets unicast to us since we are not an mDNS client.
+                try:
+                    while True:
+                        send_sock.recvfrom(MAX_PKT_SIZE, socket.MSG_DONTWAIT)
+                        logging.debug(f"Discarded inbound packet to {self.local_addrs[if_index][0]}")
+                except BlockingIOError:
+                    pass
+
                 # Don't repeat on the received interface
                 if if_index == rcvd_if_index:
                     logging.debug(f"Not repeating back to ifi {if_index}")
