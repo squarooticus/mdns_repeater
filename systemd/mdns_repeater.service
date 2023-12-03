@@ -1,0 +1,17 @@
+[Unit]
+Description=mDNS Repeater
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/mdns_repeater
+ExecStart=/home/mdnsrptr/.local/bin/mdns_repeater $REPEAT_IFACES
+DynamicUser=yes
+User=mdnsrptr
+Group=mdnsrptr
+RuntimeDirectory=mdnsrepeater
+AmbientCapabilities=CAP_SYS_CHROOT
+
+[Install]
+WantedBy=multi-user.target
