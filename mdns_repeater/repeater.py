@@ -1,3 +1,4 @@
+import traceback
 import socket
 
 from socket import (
@@ -8,7 +9,8 @@ from socket import (
         IP_ADD_MEMBERSHIP,
         IPV6_PKTINFO, IPV6_RECVPKTINFO, IPV6_JOIN_GROUP,
         INADDR_ANY,
-        inet_ntop, inet_pton, inet_aton,
+        inet_pton, inet_ntop,
+        inet_aton, inet_ntoa,
         if_nametoindex,
         )
 
@@ -41,56 +43,51 @@ def one_addr_for_if_index(family, if_index):
     raise NoLocalAddress()
 
 class Repeater(Thread, metaclass=ABCMeta):
-    def __init__(self, multicast_group, repeat_ifs, port):
+    def __init__(self, multicast_group, repeat_ifs, port, override_source_for_ifs={}):
         Thread.__init__(self, daemon=True)
 
         self.multicast_group = multicast_group
         self.repeat_ifis = [ if_nametoindex(iface) for iface in repeat_ifs ]
         self.port = port
 
-        self.recv_sock = socket.socket(self.family, SOCK_DGRAM)
-        self.recv_sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
-        self.recv_sock.setsockopt(SOL_SOCKET, SO_REUSEPORT, 1)
-        self.enable_pktinfo()
-        self.recv_sock.bind(('', port))
+        self.override_source = dict([ (if_nametoindex(iface), src_addr)
+                                     for iface, src_addr in override_source_for_ifs.items() ])
+        logging.debug(f"{override_source_for_ifs}")
+        logging.debug(f"{self.override_source}")
 
-        self.send_socks = {}
+        self.sock = socket.socket(self.family, SOCK_DGRAM)
+        self.sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
+        self.sock.setsockopt(SOL_SOCKET, SO_REUSEPORT, 1)
+        self.enable_pktinfo()
+        self.sock.bind(('', port))
+
         self.local_addrs = {}
 
         for if_index in self.repeat_ifis:
             self.join_group_on_if_index(if_index)
-
-            self.local_addrs[if_index] = self.bind_addr_for_if_index(if_index)
-
-            send_sock = socket.socket(self.family, SOCK_DGRAM)
-            send_sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
-            send_sock.setsockopt(SOL_SOCKET, SO_REUSEPORT, 1)
-            send_sock.bind(self.local_addrs[if_index])
-            self.send_socks[if_index] = send_sock
+            logging.info(f"Joined group {self.multicast_group} on ifi {if_index}")
+            self.local_addrs[if_index] = self.local_addr_for_if_index(if_index)
+            logging.info(f"Using local address {self.local_addrs[if_index]} as source address when repeating to ifi {if_index}")
 
     def run(self):
         while True:
-            data, ancdata, msgflags, addr = self.recv_sock.recvmsg(MAX_PKT_SIZE, socket.CMSG_LEN(MAX_PKT_SIZE))
-            logging.debug(f"Received message from {addr[0]}, length {len(data)}")
-            rcvd_if_index = self.get_ancdata_if_index(ancdata)
-            logging.debug(f"from ifi {rcvd_if_index}")
+            data, ancdata, msgflags, addr = self.sock.recvmsg(MAX_PKT_SIZE, socket.CMSG_LEN(MAX_PKT_SIZE))
+            logging.debug(f"Received message from {addr}, length {len(data)}, ancdata {ancdata}")
+            rcvd_if_index, dst_addr = self.decode_ancdata(ancdata)
+            logging.debug(f"over ifi {rcvd_if_index} with dest {dst_addr}")
+
+            # Don't repeat anything that wasn't addressed to the multicast group, e.g., unicast
+            if dst_addr != self.multicast_group:
+                logging.debug(f"Not repeating message not addressed to group {self.multicast_group}")
+                continue
 
             # Don't repeat something we sent on that interface
-            if addr[0] == self.local_addrs[rcvd_if_index][0]:
+            if addr[0] == self.local_addrs[rcvd_if_index]:
                 logging.debug(f"Not repeating message from ifi {rcvd_if_index} with local source {addr[0]}")
                 continue
 
             # Repeat the message to other interfaces
-            for if_index, send_sock in self.send_socks.items():
-
-                # First, discard any accumulated packets. We don't care about
-                # any packets unicast to us since we are not an mDNS client.
-                try:
-                    while True:
-                        send_sock.recvfrom(MAX_PKT_SIZE, socket.MSG_DONTWAIT)
-                        logging.debug(f"Discarded inbound packet to {self.local_addrs[if_index][0]}")
-                except BlockingIOError:
-                    pass
+            for if_index in self.repeat_ifis:
 
                 # Don't repeat on the received interface
                 if if_index == rcvd_if_index:
@@ -98,10 +95,17 @@ class Repeater(Thread, metaclass=ABCMeta):
                     continue
 
                 try:
-                    logging.debug(f"Repeating to ifi {if_index} with source {self.local_addrs[if_index][0]}")
-                    send_sock.sendto(data, (self.multicast_group, self.port))
+                    logging.debug(f"Repeating on ifi {if_index} to {self.multicast_group} with source {self.local_addrs[if_index]}")
+
+                    self.sock.sendmsg([ data, ],
+                                      self.encode_ancdata(if_index, self.local_addrs[if_index]),
+                                      0, (self.multicast_group, self.port))
                 except Exception as e:
                     logging.error(f"Error repeating to ifi {if_index}: {e}")
+                    logging.debug(traceback.format_exc())
+
+    def local_addr_for_if_index(self, if_index):
+        return self.override_source.get(if_index, one_addr_for_if_index(self.family, if_index))
 
     @abstractmethod
     def enable_pktinfo(self): pass
@@ -110,10 +114,10 @@ class Repeater(Thread, metaclass=ABCMeta):
     def join_group_on_if_index(self, if_index): pass
 
     @abstractmethod
-    def bind_addr_for_if_index(self, if_index): pass
+    def decode_ancdata(self, ancdata): pass
 
     @abstractmethod
-    def get_ancdata_if_index(self, ancdata): pass
+    def encode_ancdata(self, if_index, local_addr): pass
 
 class Repeater_IPv4(Repeater):
     def __init__(self, *args, **kwargs):
@@ -121,20 +125,20 @@ class Repeater_IPv4(Repeater):
         Repeater.__init__(self, *args, **kwargs)
 
     def enable_pktinfo(self):
-        self.recv_sock.setsockopt(IPPROTO_IP, IP_PKTINFO, 1)
+        self.sock.setsockopt(IPPROTO_IP, IP_PKTINFO, 1)
 
     def join_group_on_if_index(self, if_index):
-        self.recv_sock.setsockopt(IPPROTO_IP, IP_ADD_MEMBERSHIP,
+        self.sock.setsockopt(IPPROTO_IP, IP_ADD_MEMBERSHIP,
                                   struct.pack("4sII", inet_aton(self.multicast_group),
                                               INADDR_ANY, if_index))
 
-    def bind_addr_for_if_index(self, if_index):
-        return (one_addr_for_if_index(self.family, if_index), self.port)
-
-    def get_ancdata_if_index(self, ancdata):
+    def decode_ancdata(self, ancdata):
         pktinfo_b = [ x[2] for x in ancdata if x[0] == IPPROTO_IP and x[1] == IP_PKTINFO ][0]
-        if_index, local_addr_b, dst_addr_b = struct.unpack("I4s4s", pktinfo_b)
-        return if_index
+        if_index, local_addr, dst_addr = struct.unpack("I4s4s", pktinfo_b)
+        return (if_index, inet_ntoa(dst_addr))
+
+    def encode_ancdata(self, if_index, local_addr):
+        return [ (IPPROTO_IP, IP_PKTINFO, struct.pack("I4s4s", if_index, inet_aton(local_addr), inet_aton("0.0.0.0"))) ]
 
 class Repeater_IPv6(Repeater):
     def __init__(self, *args, **kwargs):
@@ -142,17 +146,18 @@ class Repeater_IPv6(Repeater):
         Repeater.__init__(self, *args, **kwargs)
 
     def enable_pktinfo(self):
-        self.recv_sock.setsockopt(IPPROTO_IPV6, IPV6_RECVPKTINFO, 1)
+        self.sock.setsockopt(IPPROTO_IPV6, IPV6_RECVPKTINFO, 1)
+        self.sock.setsockopt(IPPROTO_IPV6, IPV6_RECVPKTINFO, 1)
 
     def join_group_on_if_index(self, if_index):
-        self.recv_sock.setsockopt(IPPROTO_IPV6, IPV6_JOIN_GROUP,
+        self.sock.setsockopt(IPPROTO_IPV6, IPV6_JOIN_GROUP,
                                   struct.pack("16sI", inet_pton(AF_INET6, self.multicast_group),
                                               if_index))
 
-    def bind_addr_for_if_index(self, if_index):
-        return (one_addr_for_if_index(self.family, if_index), self.port, 0, if_index)
-
-    def get_ancdata_if_index(self, ancdata):
+    def decode_ancdata(self, ancdata):
         pktinfo_b = [ x[2] for x in ancdata if x[0] == IPPROTO_IPV6 and x[1] == IPV6_PKTINFO ][0]
-        dst_addr_b, if_index = struct.unpack("16sI", pktinfo_b)
-        return if_index
+        dst_addr, if_index = struct.unpack("16sI", pktinfo_b)
+        return (if_index, inet_ntop(AF_INET6, dst_addr))
+
+    def encode_ancdata(self, if_index, local_addr):
+        return [ (IPPROTO_IPV6, IPV6_PKTINFO, struct.pack("16sI", inet_pton(AF_INET6, local_addr), if_index)) ]
