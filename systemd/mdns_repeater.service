@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/default/mdns_repeater
-ExecStart=/home/mdnsrptr/.local/bin/mdns_repeater $REPEAT_IFACES
+ExecStart=/home/mdnsrptr/.local/bin/mdns_repeater $OPT_ARGS $REPEAT_IFACES
 DynamicUser=yes
 User=mdnsrptr
 Group=mdnsrptr

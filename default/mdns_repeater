@@ -1,1 +1,5 @@
+# Mandatory specification of interfaces between which to repeat mDNS packets
 REPEAT_IFACES="eth0 eth1"
+
+# Additional optional arguments (see mdns_repeater --help)
+#OPT_ARGS=
