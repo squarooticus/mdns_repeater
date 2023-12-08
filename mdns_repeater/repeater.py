@@ -52,8 +52,6 @@ class Repeater(Thread, metaclass=ABCMeta):
 
         self.override_source = dict([ (if_nametoindex(iface), src_addr)
                                      for iface, src_addr in override_source_for_ifs.items() ])
-        logging.debug(f"{override_source_for_ifs}")
-        logging.debug(f"{self.override_source}")
 
         self.sock = socket.socket(self.family, SOCK_DGRAM)
         self.sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
