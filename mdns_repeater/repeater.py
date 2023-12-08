@@ -111,11 +111,13 @@ class Repeater(Thread, metaclass=ABCMeta):
     @abstractmethod
     def join_group_on_if_index(self, if_index): pass
 
+    @classmethod
     @abstractmethod
-    def decode_ancdata(self, ancdata): pass
+    def decode_ancdata(cls, ancdata): pass
 
+    @classmethod
     @abstractmethod
-    def encode_ancdata(self, if_index, local_addr): pass
+    def encode_ancdata(cls, if_index, local_addr): pass
 
 class Repeater_IPv4(Repeater):
     def __init__(self, *args, **kwargs):
@@ -130,12 +132,14 @@ class Repeater_IPv4(Repeater):
                                   struct.pack("4sII", inet_aton(self.multicast_group),
                                               INADDR_ANY, if_index))
 
-    def decode_ancdata(self, ancdata):
+    @classmethod
+    def decode_ancdata(cls, ancdata):
         pktinfo_b = [ x[2] for x in ancdata if x[0] == IPPROTO_IP and x[1] == IP_PKTINFO ][0]
         if_index, local_addr, dst_addr = struct.unpack("I4s4s", pktinfo_b)
         return (if_index, inet_ntoa(dst_addr))
 
-    def encode_ancdata(self, if_index, local_addr):
+    @classmethod
+    def encode_ancdata(cls, if_index, local_addr):
         return [ (IPPROTO_IP, IP_PKTINFO, struct.pack("I4s4s", if_index, inet_aton(local_addr), inet_aton("0.0.0.0"))) ]
 
 class Repeater_IPv6(Repeater):
@@ -145,17 +149,18 @@ class Repeater_IPv6(Repeater):
 
     def enable_pktinfo(self):
         self.sock.setsockopt(IPPROTO_IPV6, IPV6_RECVPKTINFO, 1)
-        self.sock.setsockopt(IPPROTO_IPV6, IPV6_RECVPKTINFO, 1)
 
     def join_group_on_if_index(self, if_index):
         self.sock.setsockopt(IPPROTO_IPV6, IPV6_JOIN_GROUP,
                                   struct.pack("16sI", inet_pton(AF_INET6, self.multicast_group),
                                               if_index))
 
-    def decode_ancdata(self, ancdata):
+    @classmethod
+    def decode_ancdata(cls, ancdata):
         pktinfo_b = [ x[2] for x in ancdata if x[0] == IPPROTO_IPV6 and x[1] == IPV6_PKTINFO ][0]
         dst_addr, if_index = struct.unpack("16sI", pktinfo_b)
         return (if_index, inet_ntop(AF_INET6, dst_addr))
 
-    def encode_ancdata(self, if_index, local_addr):
+    @classmethod
+    def encode_ancdata(cls, if_index, local_addr):
         return [ (IPPROTO_IPV6, IPV6_PKTINFO, struct.pack("16sI", inet_pton(AF_INET6, local_addr), if_index)) ]
