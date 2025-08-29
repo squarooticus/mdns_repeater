@@ -79,6 +79,11 @@ class Repeater(Thread, metaclass=ABCMeta):
                 logging.debug(f"Not repeating message not addressed to group {self.multicast_group}")
                 continue
 
+            # Don't repeat anything received on an interface we are not configured to repeat for
+            if rcvd_if_index not in self.local_addrs:
+                logging.debug(f"Not repeating message received on ifi {rcvd_if_index}")
+                continue
+
             # Don't repeat something we sent on that interface
             if addr[0] == self.local_addrs[rcvd_if_index]:
                 logging.debug(f"Not repeating message from ifi {rcvd_if_index} with local source {addr[0]}")
